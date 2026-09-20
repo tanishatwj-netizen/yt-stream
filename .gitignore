@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+.env*.local
+*.log
+*.mp4
+*.mov
+*.mkv
+*.webm
+key.txt
+.wrangler/
