@@ -1449,6 +1449,7 @@ function renderStudioDashboard(env = {}) {
     }
 
     // Save and Load RTMP Ingest Configuration in LocalStorage
+    const RTMP_CONFIG_VER = '2026-v3-w2ff';
     function saveRtmpConfig() {
       try {
         const cfg = {
@@ -1456,32 +1457,27 @@ function renderStudioDashboard(env = {}) {
           streamKey: document.getElementById('streamKeyInput').value.trim(),
           loop: document.getElementById('loopCheckbox').checked,
         };
-        localStorage.setItem('fluid_rtmp_config_v2', JSON.stringify(cfg));
+        localStorage.setItem('fluid_rtmp_config_v3', JSON.stringify(cfg));
+        localStorage.setItem('fluid_rtmp_ver', RTMP_CONFIG_VER);
       } catch (e) {}
     }
 
     function loadRtmpConfig() {
       try {
-        const saved = localStorage.getItem('fluid_rtmp_config_v2');
-        if (saved) {
+        const saved = localStorage.getItem('fluid_rtmp_config_v3');
+        if (saved && localStorage.getItem('fluid_rtmp_ver') === RTMP_CONFIG_VER) {
           const cfg = JSON.parse(saved);
-          if (cfg.rtmpServer && !cfg.rtmpServer.includes('live-video.net')) {
-            document.getElementById('rtmpServerInput').value = cfg.rtmpServer;
-          } else {
-            document.getElementById('rtmpServerInput').value = "rtmp://a.rtmp.youtube.com/live2";
-          }
-          if (cfg.streamKey && !cfg.streamKey.startsWith('sk_us-west')) {
-            document.getElementById('streamKeyInput').value = cfg.streamKey;
-          } else {
-            document.getElementById('streamKeyInput').value = "6j6t-163c-qk2k-ygqr-4k7j";
-          }
+          if (cfg.rtmpServer) document.getElementById('rtmpServerInput').value = cfg.rtmpServer;
+          if (cfg.streamKey) document.getElementById('streamKeyInput').value = cfg.streamKey;
           if (cfg.loop !== undefined) document.getElementById('loopCheckbox').checked = cfg.loop;
         } else {
           document.getElementById('rtmpServerInput').value = "rtmp://a.rtmp.youtube.com/live2";
-          document.getElementById('streamKeyInput').value = "6j6t-163c-qk2k-ygqr-4k7j";
+          document.getElementById('streamKeyInput').value = "w2ff-p1y1-z7rs-7cpw-9qdu";
+          saveRtmpConfig();
         }
       } catch (e) {}
     }
+
 
     let isLive = false;
     let isStopping = false;
