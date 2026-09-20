@@ -118,12 +118,19 @@ jobs:
 
             # Exact relative position mapped to video width & height
             VF_FILTER="drawtext=fontfile=${FONT_PATH}:text='${ESCAPED_TEXT}':x=(w-text_w)*${X_RATIO}:y=(h-text_h)*${Y_RATIO}:fontsize=${OVERLAY_SIZE}:fontcolor=${OVERLAY_COLOR}${BOX_PARAM}"
-            VIDEO_ENCODE_ARGS="-vf ${VF_FILTER} -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 4000k -maxrate 5000k -bufsize 8000k -g 60"
+            
+            # Stream with live OBS text overlay (2 vCPUs)
+            ffmpeg -re -stream_loop -1 -i "$VIDEO_URL" \
+              -vf "$VF_FILTER" \
+              -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 4000k -maxrate 5000k -bufsize 8000k -g 60 \
+              -c:a aac -b:a 192k -ar 44100 \
+              -f flv -flvflags no_duration_filesize \
+              "$RTMP_DEST"
+          else
+            # Stream in direct copy mode
+            ffmpeg -re -stream_loop -1 -i "$VIDEO_URL" \
+              -c:v copy \
+              -c:a aac -b:a 192k -ar 44100 \
+              -f flv -flvflags no_duration_filesize \
+              "$RTMP_DEST"
           fi
-
-          # Stream in infinite loop (-stream_loop -1) with standard YouTube Live settings
-          ffmpeg -re -stream_loop -1 -i "$VIDEO_URL" \
-            $VIDEO_ENCODE_ARGS \
-            -c:a aac -b:a 192k -ar 44100 \
-            -f flv -flvflags no_duration_filesize \
-            "$RTMP_DEST"
