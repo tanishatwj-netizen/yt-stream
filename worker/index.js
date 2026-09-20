@@ -8,7 +8,9 @@
 
 const DEFAULT_PASSWORD = "fluidislive@2026";
 const DEFAULT_GITHUB_TOKEN = "";
+const DEFAULT_GITHUB_REPO = "tanishatwj-netizen/yt-stream";
 const COOKIE_NAME = "fluid_stream_auth";
+const recentlyStoppedRuns = new Map(); // runId -> timestamp
 
 export default {
   async fetch(request, env, ctx) {
@@ -343,8 +345,8 @@ export default {
     // ── GITHUB ACTIONS 24/7 CLOUD STREAM CONTROLLER ──────────────────────────
     function cleanRepo(raw) {
       let r = (raw || "").trim().replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "").trim();
-      if (!r || r.includes("fluid-live-studio") || r.includes("dailpad") || !r.includes("/")) {
-        return "DHANESHJOSHI/YT-streams";
+      if (!r || r.includes("fluid-live-studio") || r.includes("dailpad") || !r.includes("/") || r.includes("DHANESHJOSHI")) {
+        return "tanishatwj-netizen/yt-stream";
       }
       return r;
     }
@@ -435,9 +437,14 @@ export default {
     // 1. Check Status of GitHub Actions Streamer
     if (url.pathname === "/api/github/status" && method === "POST") {
       try {
-        const body = await request.json();
-        const repo = cleanRepo(body.repo || env.GITHUB_REPO || "DHANESHJOSHI/YT-streams");
+        const body = await request.json().catch(() => ({}));
+        const repo = cleanRepo(body.repo || env.GITHUB_REPO || DEFAULT_GITHUB_REPO);
         let token = (body.token || env.GITHUB_TOKEN || DEFAULT_GITHUB_TOKEN || "").trim();
+        const excludeRunIds = new Set(
+          (Array.isArray(body.excludeRunIds) ? body.excludeRunIds : [])
+            .map(id => Number(id))
+            .filter(Boolean)
+        );
 
         if (!token) {
           return Response.json({
@@ -448,7 +455,7 @@ export default {
         }
 
         let ghRes = await fetch(
-          `https://api.github.com/repos/${repo}/actions/runs?per_page=10`,
+          `https://api.github.com/repos/${repo}/actions/runs?per_page=15`,
           {
             headers: {
               Authorization: `Bearer ${token}`,
@@ -464,7 +471,7 @@ export default {
           if (token !== fallbackTok) {
             token = fallbackTok;
             ghRes = await fetch(
-              `https://api.github.com/repos/${repo}/actions/runs?per_page=10`,
+              `https://api.github.com/repos/${repo}/actions/runs?per_page=15`,
               {
                 headers: {
                   Authorization: `Bearer ${token}`,
@@ -486,11 +493,23 @@ export default {
           }, { status: 200, headers: corsHeaders });
         }
 
+        const now = Date.now();
+        for (const [sId, sTime] of recentlyStoppedRuns.entries()) {
+          if (now - sTime > 60000) recentlyStoppedRuns.delete(sId);
+        }
+
         const data = await ghRes.json();
         const runs = data.workflow_runs || [];
-        const activeRun = runs.find((r) => r.status === "in_progress" || r.status === "queued");
 
-        if (activeRun) {
+        // Filter out runs that were recently requested to stop
+        const trulyActiveRuns = runs.filter((r) => {
+          if (r.status !== "in_progress" && r.status !== "queued") return false;
+          if (recentlyStoppedRuns.has(Number(r.id)) || excludeRunIds.has(Number(r.id))) return false;
+          return true;
+        });
+
+        if (trulyActiveRuns.length > 0) {
+          const activeRun = trulyActiveRuns[0];
           const startTime = new Date(activeRun.created_at).getTime();
           const durationSeconds = Math.max(0, Math.floor((Date.now() - startTime) / 1000));
           return Response.json({
@@ -504,17 +523,30 @@ export default {
           }, { headers: corsHeaders });
         }
 
+        // Check if there is an active run in the process of shutting down
+        const isShuttingDown = runs.some(
+          (r) => (recentlyStoppedRuns.has(Number(r.id)) || excludeRunIds.has(Number(r.id))) && r.status !== "completed"
+        );
+        if (isShuttingDown) {
+          return Response.json({
+            isLive: false,
+            status: "stopping",
+            message: "Cloud stream runner is shutting down...",
+          }, { headers: corsHeaders });
+        }
+
         return Response.json({ isLive: false, status: "idle" }, { headers: corsHeaders });
       } catch (err) {
         return Response.json({ isLive: false, error: err.message }, { status: 500, headers: corsHeaders });
       }
     }
 
+
     // 2. Start GitHub Actions 24/7 Cloud Streamer
     if (url.pathname === "/api/github/start" && method === "POST") {
       try {
-        const body = await request.json();
-        const repo = cleanRepo(body.repo || env.GITHUB_REPO || "DHANESHJOSHI/YT-streams");
+        const body = await request.json().catch(() => ({}));
+        const repo = cleanRepo(body.repo || env.GITHUB_REPO || DEFAULT_GITHUB_REPO);
         const token = (body.token || env.GITHUB_TOKEN || DEFAULT_GITHUB_TOKEN || "").trim();
         const branch = (body.branch || "main").trim();
         const videoUrl = body.videoUrl;
@@ -550,6 +582,37 @@ export default {
             message: `GitHub repo "${repo}" not found or inaccessible (404). Since "${repo}" is a private repo, your token MUST have the "repo" scope checked. Go to GitHub -> Settings -> Developer Settings -> Personal Access Tokens -> Generate Classic Token -> Check [x] repo and [x] workflow.`,
           }, { status: 404, headers: corsHeaders });
         }
+
+        // Clear stopping status cache for fresh start
+        recentlyStoppedRuns.clear();
+
+        // Cancel any lingering runs before starting new one to prevent stream key collision
+        try {
+          const checkRes = await fetch(
+            `https://api.github.com/repos/${repo}/actions/runs?per_page=15`,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: "application/vnd.github+json",
+                "User-Agent": "FluidLiveStudio",
+              },
+            }
+          );
+          if (checkRes.ok) {
+            const data = await checkRes.json();
+            const lingering = (data.workflow_runs || []).filter(r => r.status === "in_progress" || r.status === "queued");
+            for (const r of lingering) {
+              await fetch(`https://api.github.com/repos/${repo}/actions/runs/${r.id}/cancel`, {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  Accept: "application/vnd.github+json",
+                  "User-Agent": "FluidLiveStudio",
+                },
+              }).catch(() => {});
+            }
+          }
+        } catch (_) {}
 
         // Find workflow ID if present
         let workflowId = "stream-24-7.yml";
@@ -660,8 +723,8 @@ export default {
     // 3. Stop / Cancel GitHub Actions Cloud Streamer
     if (url.pathname === "/api/github/stop" && method === "POST") {
       try {
-        const body = await request.json();
-        const repo = cleanRepo(body.repo || env.GITHUB_REPO || "DHANESHJOSHI/YT-streams");
+        const body = await request.json().catch(() => ({}));
+        const repo = cleanRepo(body.repo || env.GITHUB_REPO || DEFAULT_GITHUB_REPO);
         const token = (body.token || env.GITHUB_TOKEN || DEFAULT_GITHUB_TOKEN || "").trim();
         let runId = body.runId;
 
@@ -669,33 +732,10 @@ export default {
           return Response.json({ success: false, message: "GitHub Token required" }, { status: 400, headers: corsHeaders });
         }
 
-        // If runId not provided, discover the running one
-        if (!runId) {
-          const ghRes = await fetch(
-            `https://api.github.com/repos/${repo}/actions/runs?per_page=10`,
-            {
-              headers: {
-                Authorization: `Bearer ${token}`,
-                Accept: "application/vnd.github+json",
-                "User-Agent": "FluidLiveStudio",
-              },
-            }
-          );
-          if (ghRes.ok) {
-            const data = await ghRes.json();
-            const active = data.workflow_runs?.find((r) => r.status === "in_progress" || r.status === "queued");
-            if (active) runId = active.id;
-          }
-        }
-
-        if (!runId) {
-          return Response.json({ success: true, message: "No active cloud stream running" }, { headers: corsHeaders });
-        }
-
-        const cancelRes = await fetch(
-          `https://api.github.com/repos/${repo}/actions/runs/${runId}/cancel`,
+        // Fetch recent workflow runs
+        const ghRes = await fetch(
+          `https://api.github.com/repos/${repo}/actions/runs?per_page=25`,
           {
-            method: "POST",
             headers: {
               Authorization: `Bearer ${token}`,
               Accept: "application/vnd.github+json",
@@ -704,11 +744,63 @@ export default {
           }
         );
 
-        return Response.json({ success: true, message: "Cloud stream stopped" }, { headers: corsHeaders });
+        let runsToCancel = [];
+        if (ghRes.ok) {
+          const data = await ghRes.json();
+          const allRuns = data.workflow_runs || [];
+          runsToCancel = allRuns.filter(
+            (r) => r.status === "in_progress" || r.status === "queued" || (runId && r.id == runId && r.status !== "completed")
+          );
+        }
+
+        if (runId && !runsToCancel.some(r => r.id == runId)) {
+          runsToCancel.push({ id: runId });
+        }
+
+        if (runsToCancel.length === 0) {
+          return Response.json({ success: true, message: "No active cloud stream running" }, { headers: corsHeaders });
+        }
+
+        // Mark runs as stopped immediately in isolate memory
+        const now = Date.now();
+        for (const r of runsToCancel) {
+          recentlyStoppedRuns.set(Number(r.id), now);
+        }
+
+        // Fire both /cancel and /force-cancel to ensure swift shutdown of all runners
+        await Promise.all(
+          runsToCancel.map(async (r) => {
+            try {
+              await fetch(`https://api.github.com/repos/${repo}/actions/runs/${r.id}/cancel`, {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  Accept: "application/vnd.github+json",
+                  "User-Agent": "FluidLiveStudio",
+                },
+              });
+              await fetch(`https://api.github.com/repos/${repo}/actions/runs/${r.id}/force-cancel`, {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  Accept: "application/vnd.github+json",
+                  "User-Agent": "FluidLiveStudio",
+                },
+              }).catch(() => {});
+            } catch (_) {}
+          })
+        );
+
+        return Response.json({
+          success: true,
+          message: `Cloud stream stopped (${runsToCancel.length} runner(s) cancelled).`,
+          stoppedRunIds: runsToCancel.map(r => r.id),
+        }, { headers: corsHeaders });
       } catch (err) {
         return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
       }
     }
+
 
     // ── Default: Render Studio Dashboard UI ───────────────────────────────────
     return new Response(renderStudioDashboard(env), {
@@ -1212,21 +1304,23 @@ function renderStudioDashboard(env = {}) {
       if (repo.startsWith('http://github.com/')) repo = repo.slice(18);
       if (repo.endsWith('.git')) repo = repo.slice(0, -4);
       repo = repo.trim();
-      if (!repo || repo.includes('fluid-live-studio') || repo.includes('dailpad') || !repo.includes('/')) {
-        return 'DHANESHJOSHI/YT-streams';
+      if (!repo || repo.includes('fluid-live-studio') || repo.includes('dailpad') || !repo.includes('/') || repo.includes('DHANESHJOSHI')) {
+        return 'tanishatwj-netizen/yt-stream';
       }
       return repo;
     }
 
     // Load Saved GitHub Config from LocalStorage
-    const TOKEN_VERSION = '2026-v2';
+    const TOKEN_VERSION = '2026-v3-tanisha';
     function getGHConfig() {
       let repo = cleanRepoName(localStorage.getItem('fluid_gh_repo'));
       localStorage.setItem('fluid_gh_repo', repo);
       let token = (localStorage.getItem('fluid_gh_token') || '').trim();
-      // Auto-migrate to user verified token if version mismatch or token empty
-      if (localStorage.getItem('fluid_gh_token_ver') !== TOKEN_VERSION || !token || token.length < 15) {
+      // Auto-migrate to new account verified token
+      if (localStorage.getItem('fluid_gh_token_ver') !== TOKEN_VERSION || !token || token.length < 15 || token.startsWith('ghp_Phy') || token.startsWith('ghp_Sul')) {
         token = "${defaultToken}";
+        repo = "tanishatwj-netizen/yt-stream";
+        localStorage.setItem('fluid_gh_repo', repo);
         localStorage.setItem('fluid_gh_token', token);
         localStorage.setItem('fluid_gh_token_ver', TOKEN_VERSION);
       }
@@ -1371,18 +1465,58 @@ function renderStudioDashboard(env = {}) {
         const saved = localStorage.getItem('fluid_rtmp_config_v2');
         if (saved) {
           const cfg = JSON.parse(saved);
-          if (cfg.rtmpServer) document.getElementById('rtmpServerInput').value = cfg.rtmpServer;
-          if (cfg.streamKey) document.getElementById('streamKeyInput').value = cfg.streamKey;
+          if (cfg.rtmpServer && !cfg.rtmpServer.includes('live-video.net')) {
+            document.getElementById('rtmpServerInput').value = cfg.rtmpServer;
+          } else {
+            document.getElementById('rtmpServerInput').value = "rtmp://a.rtmp.youtube.com/live2";
+          }
+          if (cfg.streamKey && !cfg.streamKey.startsWith('sk_us-west')) {
+            document.getElementById('streamKeyInput').value = cfg.streamKey;
+          } else {
+            document.getElementById('streamKeyInput').value = "6j6t-163c-qk2k-ygqr-4k7j";
+          }
           if (cfg.loop !== undefined) document.getElementById('loopCheckbox').checked = cfg.loop;
         } else {
-          document.getElementById('rtmpServerInput').value = "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app";
-          document.getElementById('streamKeyInput').value = "sk_us-west-2_cpeGVbgUMyQo_xEua4Had5SIZdSlcjkl68wCxh9pto7";
+          document.getElementById('rtmpServerInput').value = "rtmp://a.rtmp.youtube.com/live2";
+          document.getElementById('streamKeyInput').value = "6j6t-163c-qk2k-ygqr-4k7j";
         }
       } catch (e) {}
     }
 
-    // Check Live Stream Status from Render Cloud Streamer
+    let isLive = false;
+    let isStopping = false;
+    let currentRunId = null;
+
+    // Check Live Stream Status from GitHub Actions (2 vCPUs) & Render fallback
     async function checkCloudStreamStatus() {
+      if (isStopping) return; // Never override UI while user is actively stopping
+
+      const cfg = getGHConfig() || {};
+      const repo = cfg.repo || 'tanishatwj-netizen/yt-stream';
+      const token = cfg.token || '${defaultToken}';
+
+      if (token) {
+        try {
+          const res = await fetch('/api/github/status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo, token, excludeRunIds: isStopping && currentRunId ? [currentRunId] : [] }),
+          });
+          const data = await res.json();
+          if (data.status === 'stopping') {
+            updateStoppingUI();
+            return;
+          }
+          if (data.isLive) {
+            isLive = true;
+            currentRunId = data.runId;
+            updateLiveUI(true, data.durationSeconds || 0, 30, 'GitHub Actions (2 vCPU)');
+            return;
+          }
+        } catch (e) {}
+      }
+
+      // Check Render fallback
       try {
         const res = await fetch('/api/cloud/status');
         const data = await res.json();
@@ -1393,29 +1527,31 @@ function renderStudioDashboard(env = {}) {
         }
       } catch (e) {}
 
-      // If Render reports offline, check GitHub runner if configured
-      const cfg = getGHConfig();
-      if (cfg && cfg.token) {
-        try {
-          const res = await fetch('/api/github/status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(cfg),
-          });
-          const data = await res.json();
-          if (data.isLive) {
-            isLive = true;
-            currentRunId = data.runId;
-            updateLiveUI(true, data.durationSeconds || 0);
-            return;
-          }
-        } catch (e) {}
-      }
-
       if (isLive) {
         isLive = false;
         updateLiveUI(false);
       }
+    }
+
+    function updateStoppingUI() {
+      const btn = document.getElementById('streamBtn');
+      const badge = document.getElementById('liveBadge');
+      const dot = document.getElementById('liveDot');
+      const text = document.getElementById('liveText');
+
+      btn.disabled = true;
+      btn.className = "min-w-[210px] h-11 px-6 font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 cursor-wait bg-amber-600 text-white animate-pulse";
+      btn.innerHTML = `
+        <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+        </svg>
+        <span>Stopping Cloud Stream...</span>
+      `;
+
+      badge.className = "flex items-center gap-2 px-2.5 py-1 rounded-md text-xs font-semibold tracking-wider transition-all border bg-amber-500/15 border-amber-500/40 text-amber-400";
+      dot.className = "w-2 h-2 rounded-full bg-amber-500 animate-pulse";
+      text.innerText = "SHUTTING DOWN...";
     }
 
     function updateLiveUI(live, duration = 0, fps = null, bitrate = null) {
@@ -1476,12 +1612,17 @@ function renderStudioDashboard(env = {}) {
         btn.innerText = "Starting 24/7 Cloud Stream...";
 
         try {
-          // Primary Cloud Engine: Render
-          const res = await fetch('/api/cloud/start', {
+          isStopping = false;
+          // Primary Cloud Engine: GitHub Actions (2 vCPUs, Zero Lag)
+          const cfg = getGHConfig() || {};
+          const res = await fetch('/api/github/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              videoSource: window.location.origin + selectedVideoUrl,
+              repo: cfg.repo || 'tanishatwj-netizen/yt-stream',
+              token: cfg.token || '${defaultToken}',
+              branch: cfg.branch || 'main',
+              videoUrl: window.location.origin + selectedVideoUrl,
               videoName: selectedVideoName,
               rtmpServer: srv,
               streamKey: key,
@@ -1489,17 +1630,17 @@ function renderStudioDashboard(env = {}) {
               overlayText,
               overlayXPct: currentOverlayXPct,
               overlayYPct: currentOverlayYPct,
-              overlayFontsize: currentFontSize,
+              overlayFontSize: currentFontSize,
               overlayColor: currentTextColor,
               overlayTransform: currentTransform,
-              overlayBox: document.getElementById('boxBgToggle').checked,
+              overlayBox: document.getElementById('boxBgToggle').checked ? 'true' : 'false',
             }),
           });
 
           const data = await res.json();
           if (data.success) {
-            alert('🚀 24/7 Cloud Live Stream has been STARTED on Render Cloud! You can now turn off your PC.');
-            setTimeout(checkCloudStreamStatus, 2000);
+            alert('🚀 24/7 Cloud Live Stream has been STARTED on GitHub Actions (2 Dedicated vCPUs)! You can now safely close your PC.');
+            setTimeout(checkCloudStreamStatus, 2500);
             return;
           }
 
@@ -1513,17 +1654,65 @@ function renderStudioDashboard(env = {}) {
         }
       } else {
         if (!confirm('Stop 24/7 live stream?')) return;
-        btn.disabled = true;
-        btn.innerText = "Stopping Cloud Stream...";
+        isStopping = true;
+        isLive = false;
+        updateStoppingUI();
 
         try {
-          await fetch('/api/cloud/stop', { method: 'POST' });
-          setTimeout(checkCloudStreamStatus, 2000);
+          const cfg = getGHConfig() || {};
+          const stoppingRunId = currentRunId;
+
+          await fetch('/api/github/stop', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              repo: cfg.repo || 'tanishatwj-netizen/yt-stream',
+              token: cfg.token || '${defaultToken}',
+              runId: stoppingRunId,
+            }),
+          });
+          try { await fetch('/api/cloud/stop', { method: 'POST' }); } catch (_) {}
+
+          // Actively poll until GitHub confirms idle/stopped (max 15 seconds)
+          let pollAttempts = 0;
+          const stopPoller = setInterval(async () => {
+            pollAttempts++;
+            try {
+              const res = await fetch('/api/github/status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  repo: cfg.repo || 'tanishatwj-netizen/yt-stream',
+                  token: cfg.token || '${defaultToken}',
+                  excludeRunIds: stoppingRunId ? [stoppingRunId] : [],
+                }),
+              });
+              const data = await res.json();
+              if (!data.isLive && data.status !== 'stopping') {
+                clearInterval(stopPoller);
+                isStopping = false;
+                currentRunId = null;
+                updateLiveUI(false);
+                return;
+              }
+            } catch (_) {}
+
+            if (pollAttempts >= 10) {
+              clearInterval(stopPoller);
+              isStopping = false;
+              currentRunId = null;
+              updateLiveUI(false);
+            }
+          }, 1500);
+
         } catch (e) {
           alert('Error stopping cloud stream: ' + e.message);
+          isStopping = false;
+          updateLiveUI(false);
         }
       }
     }
+
 
     // Load Videos from Cloudflare R2
     async function loadVideos() {
