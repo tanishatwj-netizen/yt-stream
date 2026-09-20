@@ -1483,9 +1483,18 @@ function renderStudioDashboard(env = {}) {
     let isStopping = false;
     let currentRunId = null;
 
-    // Check Live Stream Status from GitHub Actions (2 vCPUs) & Render fallback
+    // Check Live Stream Status from GitHub Actions (2 vCPUs)
     async function checkCloudStreamStatus() {
-      if (isStopping) return; // Never override UI while user is actively stopping
+      const forceUntil = parseInt(localStorage.getItem('fluid_force_stopped_until') || '0', 10);
+      if (Date.now() < forceUntil) {
+        if (isLive) {
+          isLive = false;
+          updateLiveUI(false);
+        }
+        return;
+      }
+
+      if (isStopping) return;
 
       const cfg = getGHConfig() || {};
       const repo = cfg.repo || 'tanishatwj-netizen/yt-stream';
@@ -1496,7 +1505,7 @@ function renderStudioDashboard(env = {}) {
           const res = await fetch('/api/github/status', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repo, token, excludeRunIds: isStopping && currentRunId ? [currentRunId] : [] }),
+            body: JSON.stringify({ repo, token, excludeRunIds: currentRunId ? [currentRunId] : [] }),
           });
           const data = await res.json();
           if (data.status === 'stopping') {
@@ -1518,7 +1527,6 @@ function renderStudioDashboard(env = {}) {
       }
     }
 
-
     function updateStoppingUI() {
       const btn = document.getElementById('streamBtn');
       const badge = document.getElementById('liveBadge');
@@ -1527,7 +1535,7 @@ function renderStudioDashboard(env = {}) {
 
       btn.disabled = true;
       btn.className = "min-w-[210px] h-11 px-6 font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 cursor-wait bg-amber-600 text-white animate-pulse";
-      btn.innerHTML = '<span class="inline-block animate-spin mr-1">⏳</span><span>Stopping Cloud Stream...</span>';
+      btn.innerHTML = '<span class="inline-block animate-spin mr-1">⏳</span><span>Force Stopping...</span>';
 
       badge.className = "flex items-center gap-2 px-2.5 py-1 rounded-md text-xs font-semibold tracking-wider transition-all border bg-amber-500/15 border-amber-500/40 text-amber-400";
       dot.className = "w-2 h-2 rounded-full bg-amber-500 animate-pulse";
@@ -1544,7 +1552,7 @@ function renderStudioDashboard(env = {}) {
       if (live) {
         btn.disabled = false;
         btn.className = "min-w-[210px] h-11 px-6 font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer bg-red-600 hover:bg-red-500 text-white glow-red animate-pulse";
-        btn.innerHTML = "<span>Stop Cloud Stream</span>";
+        btn.innerHTML = "<span>🛑 FORCE STOP STREAM</span>";
 
         badge.className = "flex items-center gap-2 px-2.5 py-1 rounded-md text-xs font-semibold tracking-wider transition-all border bg-red-500/15 border-red-500/40 text-red-400 glow-red";
         dot.className = "w-2 h-2 rounded-full bg-red-500 animate-ping";
@@ -1570,6 +1578,7 @@ function renderStudioDashboard(env = {}) {
       const btn = document.getElementById('streamBtn');
 
       if (!isLive) {
+        localStorage.removeItem('fluid_force_stopped_until');
         const key = document.getElementById('streamKeyInput').value.trim();
         const srv = document.getElementById('rtmpServerInput').value.trim();
 
@@ -1633,16 +1642,17 @@ function renderStudioDashboard(env = {}) {
           btn.innerText = "Start Cloud Stream";
         }
       } else {
-        if (!confirm('Stop 24/7 live stream?')) return;
-        isStopping = true;
+        // INSTANT FORCE STOP: Zero prompt, immediate UI feedback
+        localStorage.setItem('fluid_force_stopped_until', String(Date.now() + 60000));
+        const stoppingRunId = currentRunId;
         isLive = false;
-        updateStoppingUI();
+        isStopping = false;
+        currentRunId = null;
+        updateLiveUI(false);
 
         try {
           const cfg = getGHConfig() || {};
-          const stoppingRunId = currentRunId;
-
-          await fetch('/api/github/stop', {
+          fetch('/api/github/stop', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1650,48 +1660,12 @@ function renderStudioDashboard(env = {}) {
               token: cfg.token || '${defaultToken}',
               runId: stoppingRunId,
             }),
-          });
-          try { await fetch('/api/cloud/stop', { method: 'POST' }); } catch (_) {}
-
-          // Actively poll until GitHub confirms idle/stopped (max 15 seconds)
-          let pollAttempts = 0;
-          const stopPoller = setInterval(async () => {
-            pollAttempts++;
-            try {
-              const res = await fetch('/api/github/status', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  repo: cfg.repo || 'tanishatwj-netizen/yt-stream',
-                  token: cfg.token || '${defaultToken}',
-                  excludeRunIds: stoppingRunId ? [stoppingRunId] : [],
-                }),
-              });
-              const data = await res.json();
-              if (!data.isLive && data.status !== 'stopping') {
-                clearInterval(stopPoller);
-                isStopping = false;
-                currentRunId = null;
-                updateLiveUI(false);
-                return;
-              }
-            } catch (_) {}
-
-            if (pollAttempts >= 10) {
-              clearInterval(stopPoller);
-              isStopping = false;
-              currentRunId = null;
-              updateLiveUI(false);
-            }
-          }, 1500);
-
-        } catch (e) {
-          alert('Error stopping cloud stream: ' + e.message);
-          isStopping = false;
-          updateLiveUI(false);
-        }
+          }).catch(() => {});
+          fetch('/api/cloud/stop', { method: 'POST' }).catch(() => {});
+        } catch (_) {}
       }
     }
+
 
 
     // Load Videos from Cloudflare R2
