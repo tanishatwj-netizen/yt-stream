@@ -1541,13 +1541,7 @@ function renderStudioDashboard(env = {}) {
 
       btn.disabled = true;
       btn.className = "min-w-[210px] h-11 px-6 font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 cursor-wait bg-amber-600 text-white animate-pulse";
-      btn.innerHTML = `
-        <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-        </svg>
-        <span>Stopping Cloud Stream...</span>
-      `;
+      btn.innerHTML = '<span class="inline-block animate-spin mr-1">⏳</span><span>Stopping Cloud Stream...</span>';
 
       badge.className = "flex items-center gap-2 px-2.5 py-1 rounded-md text-xs font-semibold tracking-wider transition-all border bg-amber-500/15 border-amber-500/40 text-amber-400";
       dot.className = "w-2 h-2 rounded-full bg-amber-500 animate-pulse";
