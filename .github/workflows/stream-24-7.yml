@@ -116,28 +116,32 @@ jobs:
             echo "  Coordinates: X=${OVERLAY_X}% (${X_RATIO}), Y=${OVERLAY_Y}% (${Y_RATIO})"
             echo "  Style: Color=${OVERLAY_COLOR}, Size=${OVERLAY_SIZE}px, Box=${OVERLAY_BOX}"
 
-            # Exact relative position mapped to video width & height
-            VF_FILTER="drawtext=fontfile=${FONT_PATH}:text='${ESCAPED_TEXT}':x=(w-text_w)*${X_RATIO}:y=(h-text_h)*${Y_RATIO}:fontsize=${OVERLAY_SIZE}:fontcolor=${OVERLAY_COLOR}${BOX_PARAM}"
+            # Exact relative position mapped to video width & height with 720p scaling for zero CPU lag
+            VF_FILTER="scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,drawtext=fontfile=${FONT_PATH}:text='${ESCAPED_TEXT}':x=(w-text_w)*${X_RATIO}:y=(h-text_h)*${Y_RATIO}:fontsize=${OVERLAY_SIZE}:fontcolor=${OVERLAY_COLOR}${BOX_PARAM}"
             
-            # Stream with live OBS text overlay (2 vCPUs)
+            # Stream with live OBS text overlay (2 vCPUs, 100% 30 FPS CBR)
             ffmpeg -re -stream_loop -1 -i "$VIDEO_URL" \
               -vf "$VF_FILTER" \
+              -threads 0 \
               -r 30 \
               -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p \
-              -b:v 3200k -minrate 3200k -maxrate 3200k -bufsize 6400k \
+              -b:v 3000k -minrate 3000k -maxrate 3000k -bufsize 6000k \
               -g 60 -keyint_min 60 -sc_threshold 0 \
               -c:a aac -b:a 128k -ar 44100 -ac 2 \
               -f flv -flvflags no_duration_filesize \
               "$RTMP_DEST"
           else
-            # Stream in high-quality YouTube CBR mode (Strict 2.0s GOP, 30 fps)
+            # Stream in high-quality YouTube CBR mode (Strict 2.0s GOP, 30 fps, 720p)
             ffmpeg -re -stream_loop -1 -i "$VIDEO_URL" \
+              -vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2" \
+              -threads 0 \
               -r 30 \
               -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p \
-              -b:v 3200k -minrate 3200k -maxrate 3200k -bufsize 6400k \
+              -b:v 3000k -minrate 3000k -maxrate 3000k -bufsize 6000k \
               -g 60 -keyint_min 60 -sc_threshold 0 \
               -c:a aac -b:a 128k -ar 44100 -ac 2 \
               -f flv -flvflags no_duration_filesize \
               "$RTMP_DEST"
           fi
+
 

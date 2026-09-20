@@ -159,17 +159,23 @@ export function startLiveStream(options: StartStreamOptions): { success: boolean
     const boxArg = drawBox ? ':box=1:boxcolor=black@0.65:boxborderw=14' : ':box=0';
     const escaped = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:');
 
-    args.push('-vf', `drawtext=${fontArg}text='${escaped}':x=(w-text_w)*${xRatio}:y=(h-text_h)*${yRatio}:fontsize=${size}:fontcolor=${color}${boxArg}`);
+    args.push('-vf', `scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,drawtext=${fontArg}text='${escaped}':x=(w-text_w)*${xRatio}:y=(h-text_h)*${yRatio}:fontsize=${size}:fontcolor=${color}${boxArg}`);
     args.push(
+      '-threads', '0',
+      '-r', '30',
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-tune', 'zerolatency',
       '-pix_fmt', 'yuv420p',
-      '-b:v', '2800k',
-      '-maxrate', '3500k',
-      '-bufsize', '6000k',
-      '-g', '60'
+      '-b:v', '2500k',
+      '-minrate', '2500k',
+      '-maxrate', '2500k',
+      '-bufsize', '5000k',
+      '-g', '60',
+      '-keyint_min', '60',
+      '-sc_threshold', '0'
     );
+
   } else if (isH264) {
     args.push('-c:v', 'copy');
   } else {

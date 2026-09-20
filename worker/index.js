@@ -1516,22 +1516,12 @@ function renderStudioDashboard(env = {}) {
         } catch (e) {}
       }
 
-      // Check Render fallback
-      try {
-        const res = await fetch('/api/cloud/status');
-        const data = await res.json();
-        if (data.isLive) {
-          isLive = true;
-          updateLiveUI(true, data.uptimeSeconds || 0, data.fps, data.bitrate);
-          return;
-        }
-      } catch (e) {}
-
       if (isLive) {
         isLive = false;
         updateLiveUI(false);
       }
     }
+
 
     function updateStoppingUI() {
       const btn = document.getElementById('streamBtn');
